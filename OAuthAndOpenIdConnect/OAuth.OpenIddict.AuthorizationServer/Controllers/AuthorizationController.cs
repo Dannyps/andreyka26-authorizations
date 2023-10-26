@@ -34,7 +34,22 @@ namespace OAuth.OpenIddict.AuthorizationServer.Controllers
         public async Task<IActionResult> Authorize()
         {
             var request = HttpContext.GetOpenIddictServerRequest() ??
-                          throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
+                           throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
+
+            var application = await _applicationManager.FindByClientIdAsync(request.ClientId) ??
+                              throw new InvalidOperationException("Details concerning the calling client application cannot be found.");
+
+            if (await _applicationManager.GetConsentTypeAsync(application) != ConsentTypes.Explicit)
+            {
+                return Forbid(
+                   authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
+                   properties: new AuthenticationProperties(new Dictionary<string, string?>
+                   {
+                       [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidClient,
+                       [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] =
+                            "Only clients with explicit consent type are allowed."
+                   }));
+            }
 
             var parameters = _authService.ParseOAuthParameters(HttpContext, new List<string> { Parameters.Prompt });
 
@@ -48,31 +63,23 @@ namespace OAuth.OpenIddict.AuthorizationServer.Controllers
                 }, new[] { CookieAuthenticationDefaults.AuthenticationScheme });
             }
 
-            var application = await _applicationManager.FindByClientIdAsync(request.ClientId) ??
-                              throw new InvalidOperationException("Details concerning the calling client application cannot be found.");
-
-            var consentType = await _applicationManager.GetConsentTypeAsync(application);
-
-            // we just ignore other consent types, because they are not compliant with OAuth and OpenId Connect docs, that state that Resource Owner should grant the Client access
-            // you might also support Implicit ConsentType - where you do not require consent screen even if `prompt=consent` provided. In that case just drop this if.
-            // you might want to support External ConsentType - where you need to get created authorization first by admin to be able to log in.
-            if (consentType != ConsentTypes.Explicit)
+            if (request.HasPrompt(Prompts.Login))
             {
-                return Forbid(
-                    authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
-                    properties: new AuthenticationProperties(new Dictionary<string, string?>
-                    {
-                        [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidClient,
-                        [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] =
-                            "Only explicit consent clients are supported"
-                    }));
+                await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+                return Challenge(properties: new AuthenticationProperties
+                {
+                    RedirectUri = _authService.BuildRedirectUrl(HttpContext.Request, parameters)
+                }, new[] { CookieAuthenticationDefaults.AuthenticationScheme });
             }
 
             var consentClaim = result.Principal.GetClaim(Consts.ConsentNaming);
 
             // it might be extended in a way that consent claim will contain list of allowed client ids.
-            if (consentClaim != Consts.GrantAccessValue)
+            if (consentClaim != Consts.GrantAccessValue || request.HasPrompt(Prompts.Consent))
             {
+                await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
                 var returnUrl = HttpUtility.UrlEncode(_authService.BuildRedirectUrl(HttpContext.Request, parameters));
                 var consentRedirectUrl = $"/Consent?returnUrl={returnUrl}";
 
@@ -82,18 +89,17 @@ namespace OAuth.OpenIddict.AuthorizationServer.Controllers
             var userId = result.Principal.FindFirst(ClaimTypes.Email)!.Value;
 
             var identity = new ClaimsIdentity(
-                authenticationType: TokenValidationParameters.DefaultAuthenticationType,
-                nameType: Claims.Name,
-                roleType: Claims.Role);
+                  authenticationType: TokenValidationParameters.DefaultAuthenticationType,
+                  nameType: Claims.Name,
+                  roleType: Claims.Role);
 
             identity.SetClaim(Claims.Subject, userId)
-                .SetClaim(Claims.Email, userId)
-                .SetClaim(Claims.Name, userId)
-                .SetClaims(Claims.Role, new List<string> { "user", "admin" }.ToImmutableArray());
+                  .SetClaim(Claims.Email, userId)
+                  .SetClaim(Claims.Name, userId)
+                  .SetClaims(Claims.Role, new List<string> { "user", "admin" }.ToImmutableArray());
 
             identity.SetScopes(request.GetScopes());
             identity.SetResources(await _scopeManager.ListResourcesAsync(identity.GetScopes()).ToListAsync());
-
             identity.SetDestinations(c => AuthorizationService.GetDestinations(identity, c));
 
             return SignIn(new ClaimsPrincipal(identity), OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
@@ -103,37 +109,37 @@ namespace OAuth.OpenIddict.AuthorizationServer.Controllers
         public async Task<IActionResult> Exchange()
         {
             var request = HttpContext.GetOpenIddictServerRequest() ??
-                          throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
+                           throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
 
             if (!request.IsAuthorizationCodeGrantType() && !request.IsRefreshTokenGrantType())
                 throw new InvalidOperationException("The specified grant type is not supported.");
 
             var result =
-                await HttpContext.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+                  await HttpContext.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
 
             var userId = result.Principal.GetClaim(Claims.Subject);
 
             if (string.IsNullOrEmpty(userId))
             {
                 return Forbid(
-                    authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
-                    properties: new AuthenticationProperties(new Dictionary<string, string?>
-                    {
-                        [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
-                        [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] =
+                   authenticationSchemes: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme,
+                   properties: new AuthenticationProperties(new Dictionary<string, string?>
+                   {
+                       [OpenIddictServerAspNetCoreConstants.Properties.Error] = Errors.InvalidGrant,
+                       [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] =
                             "Cannot find user from the token."
-                    }));
+                   }));
             }
 
             var identity = new ClaimsIdentity(result.Principal.Claims,
-                authenticationType: TokenValidationParameters.DefaultAuthenticationType,
-                nameType: Claims.Name,
-                roleType: Claims.Role);
+                  authenticationType: TokenValidationParameters.DefaultAuthenticationType,
+                  nameType: Claims.Name,
+                  roleType: Claims.Role);
 
             identity.SetClaim(Claims.Subject, userId)
-                .SetClaim(Claims.Email, userId)
-                .SetClaim(Claims.Name, userId)
-                .SetClaims(Claims.Role, new List<string> { "user", "admin" }.ToImmutableArray());
+                  .SetClaim(Claims.Email, userId)
+                  .SetClaim(Claims.Name, userId)
+                  .SetClaims(Claims.Role, new List<string> { "user", "admin" }.ToImmutableArray());
 
             identity.SetDestinations(c => AuthorizationService.GetDestinations(identity, c));
 

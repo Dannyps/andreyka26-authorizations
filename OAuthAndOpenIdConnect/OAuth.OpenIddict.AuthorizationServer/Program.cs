@@ -13,16 +13,17 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 });
 
 builder.Services.AddOpenIddict()
-    .AddCore(options =>
-    {
-        options.UseEntityFrameworkCore()
-                .UseDbContext<ApplicationDbContext>();
-    })
+.AddCore(options =>
+{
+    options.UseEntityFrameworkCore()
+            .UseDbContext<ApplicationDbContext>();
+})
     .AddServer(options =>
     {
         options.SetAuthorizationEndpointUris("connect/authorize")
                 .SetLogoutEndpointUris("connect/logout")
-                .SetTokenEndpointUris("connect/token");
+                .SetTokenEndpointUris("connect/token")
+                .SetUserinfoEndpointUris("connect/userinfo");
 
         options.RegisterScopes(Scopes.Email, Scopes.Profile, Scopes.Roles);
 
@@ -30,14 +31,15 @@ builder.Services.AddOpenIddict()
 
         options.AddEncryptionKey(new SymmetricSecurityKey(
             Convert.FromBase64String("DRjd/GnduI3Efzen9V9BvbNUfc/VKgXltV7Kbk9sMkY=")));
-        
+
         options.AddDevelopmentEncryptionCertificate()
                 .AddDevelopmentSigningCertificate();
 
         options.UseAspNetCore()
                 .EnableAuthorizationEndpointPassthrough()
                 .EnableLogoutEndpointPassthrough()
-                .EnableTokenEndpointPassthrough();
+                .EnableTokenEndpointPassthrough()
+                .EnableUserinfoEndpointPassthrough();
     });
 
 builder.Services.AddTransient<AuthorizationService>();
@@ -70,6 +72,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var seeder = scope.ServiceProvider.GetRequiredService<ClientsSeeder>();
+    seeder.AddOidcDebuggerClient().GetAwaiter().GetResult();
     seeder.AddClients().GetAwaiter().GetResult();
     seeder.AddScopes().GetAwaiter().GetResult();
 }
